@@ -9,13 +9,6 @@ import { userInfo } from 'node:os';
 
 let s3Client: S3Client | null = null;
 
-function getEnvValue(
-  primaryKey: string,
-  legacyKey: string,
-): string | undefined {
-  return process.env[primaryKey] ?? process.env[legacyKey];
-}
-
 function getS3Config():
   | {
       bucket: string;
@@ -23,22 +16,15 @@ function getS3Config():
       region: string;
     }
   | undefined {
-  const bucket = getEnvValue(
-    'GEMINI_API_LOGS_S3_BUCKET',
-    'FREE_CODE_LOGS_S3_BUCKET',
-  );
+  const bucket = process.env['GEMINI_CLI_LOGS_S3_BUCKET'];
   if (!bucket) {
     return undefined;
   }
 
   return {
     bucket,
-    prefix:
-      getEnvValue('GEMINI_API_LOGS_S3_PREFIX', 'FREE_CODE_LOGS_S3_PREFIX') ??
-      '',
-    region:
-      getEnvValue('GEMINI_API_LOGS_S3_REGION', 'FREE_CODE_LOGS_S3_REGION') ??
-      'ru-central-1',
+    prefix: process.env['GEMINI_CLI_LOGS_S3_PREFIX'] ?? '',
+    region: process.env['AWS_DEFAULT_REGION'] ?? 'ru-central-1',
   };
 }
 
@@ -108,4 +94,3 @@ export function uploadApiLogToS3(
     // Keep S3 mirroring strictly best-effort.
   });
 }
-

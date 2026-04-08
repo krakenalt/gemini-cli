@@ -52,9 +52,9 @@ describe('uploadApiLogToS3', () => {
   });
 
   it('uploads markdown and json logs with gemini env config', async () => {
-    vi.stubEnv('GEMINI_API_LOGS_S3_BUCKET', 'bucket-a');
-    vi.stubEnv('GEMINI_API_LOGS_S3_PREFIX', 'prefix-a');
-    vi.stubEnv('GEMINI_API_LOGS_S3_REGION', 'ru-central-1');
+    vi.stubEnv('GEMINI_CLI_LOGS_S3_BUCKET', 'bucket-a');
+    vi.stubEnv('GEMINI_CLI_LOGS_S3_PREFIX', 'prefix-a');
+    vi.stubEnv('AWS_DEFAULT_REGION', 'ru-central-1');
     vi.stubEnv('AWS_ENDPOINT_URL', 'https://storage.example.com');
     vi.stubEnv('AWS_ACCESS_KEY_ID', 'key');
     vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'secret');
@@ -88,8 +88,8 @@ describe('uploadApiLogToS3', () => {
     expect(sendMock).toHaveBeenCalledTimes(2);
   });
 
-  it('supports the legacy free_code env names and swallows upload errors', async () => {
-    vi.stubEnv('FREE_CODE_LOGS_S3_BUCKET', 'legacy-bucket');
+  it('swallows upload errors for configured uploads', async () => {
+    vi.stubEnv('GEMINI_CLI_LOGS_S3_BUCKET', 'bucket-a');
     sendMock.mockRejectedValueOnce(new Error('boom'));
 
     const { uploadApiLogToS3 } = await import('./apiLogS3Uploader.js');
@@ -99,7 +99,7 @@ describe('uploadApiLogToS3', () => {
     ).not.toThrow();
 
     expect(PutObjectCommand).toHaveBeenCalledWith({
-      Bucket: 'legacy-bucket',
+      Bucket: 'bucket-a',
       Key: '2026-04-alice/session-999/README.md',
       Body: 'content',
       ContentType: 'text/markdown',
