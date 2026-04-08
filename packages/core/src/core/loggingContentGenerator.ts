@@ -50,6 +50,7 @@ import {
 import { safeJsonStringify } from '../utils/safeJsonStringify.js';
 import { isMcpToolName } from '../tools/mcp-tool.js';
 import { estimateTokenCountSync } from '../utils/tokenCalculation.js';
+import { ApiFileLogger, type ApiLogHandle } from './apiFileLogger.js';
 
 interface StructuredError {
   status: number;
@@ -147,10 +148,14 @@ export function estimateContextBreakdown(
 }
 
 export class LoggingContentGenerator implements ContentGenerator {
+  private readonly apiFileLogger: ApiFileLogger;
+
   constructor(
     private readonly wrapped: ContentGenerator,
     private readonly config: Config,
-  ) {}
+  ) {
+    this.apiFileLogger = new ApiFileLogger(config);
+  }
 
   getWrapped(): ContentGenerator {
     return this.wrapped;
@@ -224,6 +229,37 @@ export class LoggingContentGenerator implements ContentGenerator {
     // Case 3: Default to the public Gemini API endpoint.
     // This is used when an API key is provided but not for Vertex AI.
     return { address: `generativelanguage.googleapis.com`, port: 443 };
+  }
+
+  private _getApiLogSource(): string {
+    if (this.wrapped instanceof CodeAssistServer) {
+      return 'code-assist';
+    }
+
+    return this.config.getContentGeneratorConfig()?.authType ?? 'unknown';
+  }
+
+  private _getApiLogUrl(
+    req: GenerateContentParameters,
+    method: 'generateContent' | 'generateContentStream',
+  ): string {
+    if (this.wrapped instanceof CodeAssistServer) {
+      return this.wrapped.getMethodUrl(method);
+    }
+
+    const baseUrl =
+      this.config.getContentGeneratorConfig()?.baseUrl ??
+      (this.config.getContentGeneratorConfig()?.vertexai
+        ? (() => {
+            const location = process.env['GOOGLE_CLOUD_LOCATION'];
+            if (!location) {
+              return 'https://aiplatform.googleapis.com';
+            }
+            return `https://${location}-aiplatform.googleapis.com`;
+          })()
+        : 'https://generativelanguage.googleapis.com');
+
+    return `${baseUrl.replace(/\/$/, '')}/${method}`;
   }
 
   private _logApiResponse(
@@ -365,6 +401,12 @@ export class LoggingContentGenerator implements ContentGenerator {
         const startTime = Date.now();
         const contents: Content[] = toContents(req.contents);
         const serverDetails = this._getEndpointUrl(req, 'generateContent');
+        const apiLogHandle = this.apiFileLogger.logRequest({
+          requestBody: req,
+          requestContents: contents,
+          source: this._getApiLogSource(),
+          url: this._getApiLogUrl(req, 'generateContent'),
+        });
         this.logApiRequest(
           contents,
           req.model,
@@ -405,6 +447,7 @@ export class LoggingContentGenerator implements ContentGenerator {
             req.config,
             serverDetails,
           );
+          this.apiFileLogger.logResponse(apiLogHandle, response);
           this.config
             .refreshUserQuotaIfStale()
             .catch((e) => debugLogger.debug('quota refresh failed', e));
@@ -453,10 +496,17 @@ export class LoggingContentGenerator implements ContentGenerator {
         spanMetadata.input = req.contents;
 
         const startTime = Date.now();
+        const requestContents = toContents(req.contents);
         const serverDetails = this._getEndpointUrl(
           req,
           'generateContentStream',
         );
+        const apiLogHandle = this.apiFileLogger.logRequest({
+          requestBody: req,
+          requestContents,
+          source: this._getApiLogSource(),
+          url: this._getApiLogUrl(req, 'generateContentStream'),
+        });
 
         // For debugging: Capture the latest main agent request payload.
         // Main agent prompt IDs end with exactly 8 hashes and a turn counter (e.g. "...########1")
@@ -465,7 +515,7 @@ export class LoggingContentGenerator implements ContentGenerator {
         }
 
         this.logApiRequest(
-          toContents(req.contents),
+          requestContents,
           req.model,
           userPromptId,
           role,
@@ -505,6 +555,7 @@ export class LoggingContentGenerator implements ContentGenerator {
           userPromptId,
           role,
           spanMetadata,
+          apiLogHandle,
         );
       },
     );
@@ -517,6 +568,7 @@ export class LoggingContentGenerator implements ContentGenerator {
     userPromptId: string,
     role: LlmRole,
     spanMetadata: SpanMetadata,
+    apiLogHandle: ApiLogHandle | undefined,
   ): AsyncGenerator<GenerateContentResponse> {
     const responses: GenerateContentResponse[] = [];
 
@@ -554,6 +606,7 @@ export class LoggingContentGenerator implements ContentGenerator {
         req.config,
         serverDetails,
       );
+      this.apiFileLogger.logResponse(apiLogHandle, responses);
       this.config
         .refreshUserQuotaIfStale()
         .catch((e) => debugLogger.debug('quota refresh failed', e));

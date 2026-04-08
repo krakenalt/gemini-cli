@@ -7,11 +7,16 @@
 const logApiRequest = vi.hoisted(() => vi.fn());
 const logApiResponse = vi.hoisted(() => vi.fn());
 const logApiError = vi.hoisted(() => vi.fn());
+const uploadApiLogToS3 = vi.hoisted(() => vi.fn());
 
 vi.mock('../telemetry/loggers.js', () => ({
   logApiRequest,
   logApiResponse,
   logApiError,
+}));
+
+vi.mock('./apiLogS3Uploader.js', () => ({
+  uploadApiLogToS3,
 }));
 
 const runInDevTraceSpan = vi.hoisted(() =>
@@ -28,6 +33,14 @@ vi.mock('../telemetry/trace.js', () => ({
 }));
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type {
   Content,
   GenerateContentConfig,
@@ -74,6 +87,8 @@ describe('LoggingContentGenerator', () => {
       }),
       getTelemetryLogPromptsEnabled: vi.fn().mockReturnValue(true),
       refreshUserQuotaIfStale: vi.fn().mockResolvedValue(undefined),
+      getSessionId: vi.fn().mockReturnValue(undefined),
+      getWorkingDir: vi.fn().mockReturnValue(process.cwd()),
     } as unknown as Config;
     loggingContentGenerator = new LoggingContentGenerator(wrapped, config);
     vi.useFakeTimers();
@@ -85,6 +100,71 @@ describe('LoggingContentGenerator', () => {
   });
 
   describe('generateContent', () => {
+    it('writes session api logs when session context is available', async () => {
+      const workingDir = mkdtempSync(join(tmpdir(), 'gemini-logging-cg-'));
+      vi.mocked(config.getSessionId).mockReturnValue('session-abc');
+      vi.mocked(config.getWorkingDir).mockReturnValue(workingDir);
+
+      const req = {
+        contents: [{ role: 'user', parts: [{ text: 'hello logger' }] }],
+        model: 'gemini-pro',
+      };
+      const response: GenerateContentResponse = {
+        candidates: [
+          {
+            content: {
+              parts: [{ text: 'hello back' }],
+            },
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+        text: undefined,
+        functionCalls: undefined,
+        executableCode: undefined,
+        codeExecutionResult: undefined,
+        data: undefined,
+      };
+      vi.mocked(wrapped.generateContent).mockResolvedValue(response);
+
+      try {
+        await loggingContentGenerator.generateContent(
+          req,
+          'prompt-logger',
+          LlmRole.MAIN,
+        );
+
+        const sessionDir = join(
+          workingDir,
+          '.gemini-api-logs',
+          'session-abc',
+        );
+        const files = readdirSync(sessionDir);
+        const requestFile = files.find((file) => file.endsWith('_request.json'));
+        const responseFile = files.find((file) =>
+          file.endsWith('_response.json'),
+        );
+
+        expect(readFileSync(join(sessionDir, 'README.md'), 'utf-8')).toContain(
+          'hello logger',
+        );
+        expect(requestFile).toBeDefined();
+        expect(responseFile).toBeDefined();
+        expect(
+          readFileSync(join(sessionDir, requestFile!), 'utf-8'),
+        ).toContain('"hello logger"');
+        expect(
+          readFileSync(join(sessionDir, responseFile!), 'utf-8'),
+        ).toContain('"hello back"');
+        expect(uploadApiLogToS3).toHaveBeenCalled();
+      } finally {
+        rmSync(workingDir, { recursive: true, force: true });
+      }
+    });
+
     it('should log request and response on success', async () => {
       const req = {
         contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
